@@ -4,104 +4,156 @@
     <meta charset="UTF-8">
     <title>ytldr</title>
     <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            margin: 20px; 
-            max-width: 300px;
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #181818;
+            color: #fff;
+            min-width: 320px;
+            min-height: 420px;
+            border-radius: 12px;
         }
-        label, select, button {
-            display: block;
-            margin-top: 10px;
+        .ytldr-container {
+            padding: 24px 20px 20px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        h2 {
+            margin: 0 0 8px 0;
+            font-size: 1.5em;
+            letter-spacing: 1px;
+            color: #c00;
+        }
+        label {
+            font-size: 1em;
+            margin-bottom: 2px;
+            color: #eee;
+        }
+        select, input[type="number"], input[type="text"] {
             width: 100%;
+            padding: 7px 10px;
+            border-radius: 6px;
+            border: 1px solid #333;
+            background: #232323;
+            color: #fff;
+            font-size: 1em;
+            margin-bottom: 6px;
         }
-        #status {
-            margin-top: 15px;
-            font-size: 0.9em;
-            color: green;
+        input[type="range"] {
+            width: 100%;
+            margin: 0 0 4px 0;
+            accent-color: #c00;
+            appearance: none;
+            -webkit-appearance: none;
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #c00;
+            border: 2px solid #fff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #c00;
+            border: 2px solid #fff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            cursor: pointer;
+        }
+        input[type="range"]::-ms-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #c00;
+            border: 2px solid #fff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            cursor: pointer;
+        }
+        input[type="range"]:focus {
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+        }
+        input[type="range"]::-ms-fill-lower {
+            background: #333;
+        }
+        input[type="range"]::-ms-fill-upper {
+            background: #333;
+        }
+        input[type="range"]::-moz-range-track {
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+        }
+        button {
+            padding: 10px 0;
+            border: none;
+            border-radius: 6px;
+            background: #c00;
+            color: #fff;
+            font-size: 1.1em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+            margin-bottom: 4px;
+        }
+        button:disabled {
+            background: #888;
+            color: #eee;
+            cursor: wait;
+        }
+        #describeLinkBtn.active {
+            background: #222;
+            color: #c00;
+            border: 1.5px solid #c00;
+        }
+        #summaryBox {
+            margin-top: 10px;
+            min-height: 60px;
+            border: 1.5px solid #c00;
+            border-radius: 8px;
+            padding: 12px;
+            background: #232323;
+            font-size: 16px;
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+            transition: font-size 0.2s, background 0.2s;
         }
     </style>
 </head>
 <body>
-    <h2>ytldr</h2>
-    <p>Select which Ollama model you want to use for summarization:</p>
-
-    <label for="model-select">Available Models:</label>
-    <select id="model-select">
-        <option>Loading…</option>
-    </select>
-
-    <button id="save-btn">Save Selection</button>
-    <div id="status"></div>
-
-    <script>
-    (async () => {
-        const statusDiv = document.getElementById('status');
-        const selectEl  = document.getElementById('model-select');
-
-        // 1) Read the previously saved model from chrome.storage.local, default to "deepseek-r1:1.5b"
-        let currentModel = 'deepseek-r1:1.5b';
-        chrome.storage.local.get(['ytldr_selectedModel'], (items) => {
-            if (items.ytldr_selectedModel) {
-                currentModel = items.ytldr_selectedModel;
-            }
-            // Once we know currentModel, populate the <select> (below).
-            loadModelList(currentModel);
-        });
-
-        // 2) Fetch and populate the dropdown with Ollama models
-        async function loadModelList(defaultModel) {
-            selectEl.innerHTML = '<option>Loading…</option>';
-            try {
-                const res = await fetch('http://localhost:11434/api/tags');
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const data = await res.json();
-                console.log('ytldr popup: /api/tags responded with:', data);
-
-                let models = [];
-                if (Array.isArray(data.tags)) {
-                    models = data.tags.slice();
-                } else if (Array.isArray(data.models)) {
-                    models = data.models.map(m => m.name);
-                } else {
-                    console.warn('ytldr popup: unexpected JSON shape (no data.tags or data.models).', data);
-                }
-
-                // Clear placeholder
-                selectEl.innerHTML = '';
-
-                if (models.length === 0) {
-                    const opt = document.createElement('option');
-                    opt.textContent = 'No models found';
-                    opt.disabled = true;
-                    selectEl.appendChild(opt);
-                } else {
-                    models.forEach(name => {
-                        const opt = document.createElement('option');
-                        opt.value = name;
-                        opt.textContent = name;
-                        if (name === defaultModel) opt.selected = true;
-                        selectEl.appendChild(opt);
-                    });
-                }
-            } catch (err) {
-                console.error('ytldr popup: Failed to fetch models from Ollama (/api/tags):', err);
-                selectEl.innerHTML = '<option disabled>Error loading models</option>';
-                statusDiv.textContent = '⚠️ Could not load model list from Ollama.';
-            }
-        }
-
-        // 3) “Save Selection” button logic
-        document.getElementById('save-btn').addEventListener('click', () => {
-            const chosen = selectEl.value;
-            if (!chosen || chosen === 'Loading…' || chosen === 'No models found' || chosen.startsWith('Error')) {
-                return;
-            }
-            chrome.storage.local.set({ ytldr_selectedModel: chosen }, () => {
-                statusDiv.textContent = `✅ Saved model: ${chosen}`;
-                setTimeout(() => { statusDiv.textContent = ''; }, 2000);
-            });
-        });
-    })();
-    </script>
+    <div class="ytldr-container">
+        <h2>ytldr</h2>
+        <label for="modelSelect">Ollama Model</label>
+        <select id="modelSelect">
+            <option>Loading…</option>
+        </select>
+        <label for="fontSizeInput">Font Size</label>
+        <input type="range" id="fontSizeInput" min="10" max="48" value="16" style="width:100%;">
+        <div
+            style="display:flex; justify-content:space-between; font-size:0.95em; color:#aaa; margin-top:-8px; margin-bottom:4px;">
+            <span>10px</span><span id="fontSizeValue">16px</span><span>48px</span>
+        </div>
+        <label for="urlInput">YouTube Video URL</label>
+        <input type="text" id="urlInput" placeholder="Paste YouTube video URL here" />
+        <button id="summarizeBtn">Summarize</button>
+        <div id="summaryBox"></div>
+        </div>
+        <script src="popup.js"></script>
 </body>
 </html>

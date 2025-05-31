@@ -3,8 +3,16 @@
   "name": "ytldr",
   "version": "1.0.0",
   "description": "Show a summary of YouTube videos when hovering over them.",
-  "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": ["https://www.youtube.com/*"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "http://localhost:11434/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },

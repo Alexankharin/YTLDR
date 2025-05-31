@@ -122,43 +122,52 @@
     return null;
   }
 
-  async function fetchSummary(videoId) {
+  // Wrapper to use cache and avoid re-generating
+  async function getCachedSummary(videoId, model) {
+    const cacheKey = model ? `${videoId}::${model}` : videoId;
+    if (summaryCache[cacheKey]) {
+      return summaryCache[cacheKey];
+    }
+    const summary = await fetchSummary(videoId, model);
+    summaryCache[cacheKey] = summary;
+    return summary;
+  }
+
+  // Update fetchSummary to accept model
+  async function fetchSummary(videoId, model) {
     console.log(`[Summary] fetchSummary(${videoId})`);
     const subs = await fetchSubtitles(videoId);
     if (!subs) return 'No subtitles available for this video.';
     const prompt = `
-You are a youtube video summarization assistant.
-Your task is to generate a concise summary of the provided YouTube video based on subtitles.
-the summary should be clear, informative, and capture the main points of the video.
-Add timestamps to the summary in the format [hh:mm:ss] for each key point.
-The summary should be in English and should not include any personal opinions or interpretations.
-Here is the transcript:
-${subs}
-`;
+      You are a youtube video summarization assistant.
+      Your task is to generate a concise summary of the provided YouTube video based on subtitles.
+      the summary should be clear, informative, and capture the main points of the video.
+      Add timestamps to the summary in the format [hh:mm:ss] for each key point.
+      The summary should be in English and should not include any personal opinions or interpretations.
+      Summary should be in a single paragraph 5-10 sentences long, maybe with bulleted points if appropriate.
+      Here is the transcript:
+  ${subs}
+  `;
     try {
-      return await ollama.generate({ prompt, model: 'deepseek-r1' });
+      return await ollama.generate({ prompt, model: model || 'deepseek-r1' });
     } catch (e) {
       console.error('[Summary] error', e);
       return `Failed to summarize: ${e.message}`;
     }
   }
 
-  // Wrapper to use cache and avoid re-generating
-  async function getCachedSummary(videoId) {
-    if (summaryCache[videoId]) {
-      return summaryCache[videoId];
-    }
-    const summary = await fetchSummary(videoId);
-    summaryCache[videoId] = summary;
-    return summary;
-  }
-
   function cleanSummary(raw) {
     // Remove any stray <think>…</think> just in case
-    return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // Remove everything before the last </think> tag (inclusive)
+    const lastThink = raw.lastIndexOf('</think>');
+    let cleaned = raw;
+    if (lastThink !== -1) {
+      cleaned = raw.slice(lastThink + 8); // 8 = '</think>'.length
+    }
+    return cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   }
 
-  function createSummaryPopup(rawText, rect) {
+  function createSummaryPopup(rawText, rect, opts = {}) {
     const text = cleanSummary(rawText);
     removeSummaryPopup();
 
@@ -166,25 +175,34 @@ ${subs}
     const popup = document.createElement('div');
     popup.className = 'ytldr-summary-popup';
 
-    // Basic styles + draggable cursor
+    // Font and size options
+    const fontSize = opts.fontSize || window.ytldrFontSize || 14;
+    // Remove winWidth/winHeight, let CSS handle size, allow resize
+
+    // Basic styles + draggable and resizable
     Object.assign(popup.style, {
       position: 'fixed',
       top: `${rect.top}px`,
       left: `${rect.right + 8}px`,
-      background: '#222',
+      background: 'rgba(34,34,34,0.98)',
       color: '#fff',
-      padding: '12px 14px 12px 14px',
-      borderRadius: '8px',
+      padding: '16px 18px 16px 18px',
+      borderRadius: '12px',
       zIndex: 9999,
-      maxWidth: '320px',
-      maxHeight: '240px',
-      overflow: 'auto',            // needed for resizing
-      resize: 'both',               // allow both horizontal & vertical resizing
-      boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-      fontSize: '14px',
-      lineHeight: '1.5',
+      minWidth: '220px',
+      minHeight: '120px',
+      maxWidth: '90vw',
+      maxHeight: '80vh',
+      overflow: 'auto',
+      resize: 'both',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
+      fontSize: fontSize + 'px',
+      lineHeight: '1.6',
       whiteSpace: 'pre-wrap',
-      cursor: 'move'               // show “move” cursor on hover
+      cursor: 'default',
+      transition: 'box-shadow 0.2s, background 0.2s',
+      border: '1.5px solid #c00',
+      backdropFilter: 'blur(2px)'
     });
 
     // Close (×) button
@@ -192,13 +210,14 @@ ${subs}
     closeBtn.textContent = '×';
     Object.assign(closeBtn.style, {
       position: 'absolute',
-      top: '4px',
-      right: '8px',
+      top: '8px',
+      right: '14px',
       cursor: 'pointer',
-      fontSize: '16px',
+      fontSize: '20px',
       fontWeight: 'bold',
       color: '#aaa',
-      zIndex: 10000
+      zIndex: 10000,
+      transition: 'color 0.2s'
     });
     closeBtn.addEventListener('mouseenter', () => { closeBtn.style.color = '#fff'; });
     closeBtn.addEventListener('mouseleave', () => { closeBtn.style.color = '#aaa'; });
@@ -208,6 +227,8 @@ ${subs}
     // Summary text
     const content = document.createElement('div');
     content.textContent = text;
+    content.style.marginTop = '18px';
+    content.style.fontSize = fontSize + 'px';
     popup.appendChild(content);
 
     document.body.appendChild(popup);
@@ -220,31 +241,25 @@ ${subs}
       if (pr.left < 0) popup.style.left = '10px';
     }
 
-    // ───────────────────────────────────────────────────────────────────────────
-    // Dragging Logic
-    // ───────────────────────────────────────────────────────────────────────────
-    // The user can drag the popup by clicking anywhere on it except the close button.
-
+    // Dragging Logic (only drag if not on resize handle)
     let isDragging = false;
     let startX, startY, startLeft, startTop;
-
     const onMouseDown = (e) => {
-      // Only start dragging if the click is NOT on the close button
-      if (e.target === closeBtn) return;
-
+      // Only drag if not on the resize handle (bottom-right corner)
+      const rectNow = popup.getBoundingClientRect();
+      if (
+        e.target === closeBtn ||
+        (e.offsetX > rectNow.width - 24 && e.offsetY > rectNow.height - 24)
+      ) return;
       isDragging = true;
-      // Record starting mouse coordinates and popup position
       startX = e.clientX;
       startY = e.clientY;
-      const rectNow = popup.getBoundingClientRect();
       startLeft = rectNow.left;
       startTop = rectNow.top;
-
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
       e.preventDefault();
     };
-
     const onMouseMove = (e) => {
       if (!isDragging) return;
       const dx = e.clientX - startX;
@@ -252,16 +267,21 @@ ${subs}
       popup.style.left = `${startLeft + dx}px`;
       popup.style.top = `${startTop + dy}px`;
     };
-
     const onMouseUp = () => {
       if (!isDragging) return;
       isDragging = false;
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };
-
-    // Attach mousedown listener to the popup (not the close button)
     popup.addEventListener('mousedown', onMouseDown);
+
+    // Listen for font size changes from popup.js
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg.action === 'ytldrUpdateStyle' && msg.fontSize) {
+        popup.style.fontSize = msg.fontSize + 'px';
+        content.style.fontSize = msg.fontSize + 'px';
+      }
+    });
   }
 
   function removeSummaryPopup() {
@@ -278,10 +298,11 @@ ${subs}
   // Now only the context menu will trigger “Generate Summary”.
   // ─────────────────────────────────────────────────────────────────────────────
 
-  function addSummaryButton() {
+  function addSummaryButton(model) {
     // Optionally retain “Generate Summary” button on any watch page
     if (!/v=([\w-]{11})/.test(location.search)) return;
     if (document.getElementById('ytldr-summary-btn')) return;
+    if (!summaryBtnEnabled) return;
 
     const btn = document.createElement('button');
     btn.id = 'ytldr-summary-btn';
@@ -304,14 +325,18 @@ ${subs}
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       btn.textContent = 'Summarizing…';
+      btn.style.background = '#888';
+      btn.style.cursor = 'wait';
       const vid = getVideoIdFromUrl(location.search);
       if (vid) {
         const rect = btn.getBoundingClientRect();
-        const summary = await getCachedSummary(vid);
-        createSummaryPopup(summary, rect);
+        const summary = await getCachedSummary(vid, model);
+        createSummaryPopup(summary, rect, { fontSize: window.ytldrFontSize });
       }
       btn.disabled = false;
       btn.textContent = 'Generate Summary';
+      btn.style.background = '#c00';
+      btn.style.cursor = 'pointer';
     });
     document.body.appendChild(btn);
   }
@@ -481,4 +506,51 @@ ${subs}
 
   window.addEventListener('DOMContentLoaded', init);
   document.addEventListener('yt-navigate-finish', init);
+
+  // DescribeLink mode: listen for YouTube video link clicks and send to extension
+  if (window === window.top) {
+    document.addEventListener('click', function (e) {
+      let el = e.target;
+      while (el && el.tagName !== 'A') el = el.parentElement;
+      if (el && el.href && el.href.includes('youtube.com/watch')) {
+        chrome.runtime.sendMessage({ action: 'summarizeUrl', url: el.href });
+      }
+    }, true);
+  }
+
+  // Listen for show/hide on-page summary button toggle from popup
+  let summaryBtnEnabled = true;
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === 'ytldrToggleSummaryBtn') {
+      summaryBtnEnabled = !summaryBtnEnabled;
+      if (summaryBtnEnabled) {
+        addSummaryButton();
+      } else {
+        const btn = document.getElementById('ytldr-summary-btn');
+        if (btn) btn.remove();
+      }
+      sendResponse && sendResponse();
+    }
+    if (msg.action === 'ytldrCheckSummaryBtn') {
+      const btn = document.getElementById('ytldr-summary-btn');
+      sendResponse && sendResponse({ enabled: !!btn });
+    }
+  });
+
+  // Listen for summary requests from popup and return cached summary if available
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === 'ytldrGetSummary') {
+      const url = msg.url;
+      const model = msg.model;
+      const vid = getVideoIdFromUrl(url);
+      if (!vid) {
+        sendResponse && sendResponse({ summary: 'No YouTube video detected.' });
+        return;
+      }
+      getCachedSummary(vid, model).then(summary => {
+        sendResponse && sendResponse({ summary });
+      });
+      return true; // async
+    }
+  });
 })();
