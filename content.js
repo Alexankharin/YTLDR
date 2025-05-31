@@ -1,12 +1,3 @@
-// ==UserScript==
-// @name         YouTube Context‐Menu Summaries (Draggable & Resizable Popup)
-// @namespace    http://yourdomain.com/
-// @version      2.1‐dragresize
-// @description  Summarize YouTube videos via right‐click, with a draggable & resizable summary window.
-// @match        https://www.youtube.com/*
-// @grant        GM_registerMenuCommand
-// ==/UserScript==
-
 (() => {
   // ─────────────────────────────────────────────────────────────────────────────
   // Preserve original logic for fetching and summarizing transcripts. UI only
@@ -14,33 +5,12 @@
   // popup, and caching). Hover‐based summarization has been removed.
   // ─────────────────────────────────────────────────────────────────────────────
 
-  class LocalOllamaClient {
-    constructor(baseUrl = 'http://localhost:11434') {
-      this.baseUrl = baseUrl.replace(/\/$/, '');
-    }
-    async generate({ model = 'deepseek-r1', prompt, stream = false } = {}) {
-      console.log('[Ollama] generate()', model, prompt.slice(0, 50) + '…');
-      const res = await fetch(`${this.baseUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt, stream }),
-      });
-      if (!res.ok) {
-        const err = await res.text().catch(() => res.statusText);
-        console.error('[Ollama] error', res.status, err);
-        throw new Error(`Ollama API error ${res.status}: ${err}`);
-      }
-      const j = await res.json();
-      console.log('[Ollama] success', j);
-      return j.response;
-    }
-  }
-  const ollama = new LocalOllamaClient();
+  // OllamaClient is now in background.js
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Cache for summaries: { [videoId]: summaryString }
   // ─────────────────────────────────────────────────────────────────────────────
-  const summaryCache = {};
+  // summaryCache object removed, caching is now handled by background.js
 
   async function fetchSubtitles(videoId) {
     console.group(`[Subs] fetchSubtitles(${videoId})`);
@@ -122,53 +92,39 @@
     return null;
   }
 
-  // Wrapper to use cache and avoid re-generating
-  async function getCachedSummary(videoId, model) {
-    const cacheKey = model ? `${videoId}::${model}` : videoId;
-    if (summaryCache[cacheKey]) {
-      return summaryCache[cacheKey];
+  // Renamed from fetchSummary, now messages background.js
+  async function requestSummaryFromBackground(videoId, model) {
+    console.log(`[Content] requestSummaryFromBackground for videoId: ${videoId}, model: ${model}`);
+    const subtitles = await fetchSubtitles(videoId);
+    if (!subtitles) {
+      console.error('[Content] No subtitles available, cannot request summary.');
+      return 'No subtitles available for this video.';
     }
-    const summary = await fetchSummary(videoId, model);
-    summaryCache[cacheKey] = summary;
-    return summary;
+
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { action: 'generateSummary', videoId, subtitles, model },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('[Content] Error sending message to background:', chrome.runtime.lastError.message);
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (response.error) {
+            console.error('[Content] Error from background script:', response.error);
+            reject(new Error(response.error));
+          } else {
+            console.log('[Content] Summary received from background:', response.summary.slice(0,100) + '...');
+            resolve(response.summary);
+          }
+        }
+      );
+    });
   }
 
-  // Update fetchSummary to accept model
-  async function fetchSummary(videoId, model) {
-    console.log(`[Summary] fetchSummary(${videoId})`);
-    const subs = await fetchSubtitles(videoId);
-    if (!subs) return 'No subtitles available for this video.';
-    const prompt = `
-      You are a youtube video summarization assistant.
-      Your task is to generate a concise summary of the provided YouTube video based on subtitles.
-      the summary should be clear, informative, and capture the main points of the video.
-      Add timestamps to the summary in the format [hh:mm:ss] for each key point.
-      The summary should be in English and should not include any personal opinions or interpretations.
-      Summary should be in a single paragraph 5-10 sentences long, maybe with bulleted points if appropriate.
-      Here is the transcript:
-  ${subs}
-  `;
-    try {
-      return await ollama.generate({ prompt, model: model || 'deepseek-r1' });
-    } catch (e) {
-      console.error('[Summary] error', e);
-      return `Failed to summarize: ${e.message}`;
-    }
-  }
-
-  function cleanSummary(raw) {
-    // Remove any stray <think>…</think> just in case
-    // Remove everything before the last </think> tag (inclusive)
-    const lastThink = raw.lastIndexOf('</think>');
-    let cleaned = raw;
-    if (lastThink !== -1) {
-      cleaned = raw.slice(lastThink + 8); // 8 = '</think>'.length
-    }
-    return cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  }
+  // cleanSummary function removed, it's now in background.js
 
   function createSummaryPopup(rawText, rect, opts = {}) {
-    const text = cleanSummary(rawText);
+    // const text = cleanSummary(rawText); // Summary is already cleaned by background.js
+    const text = rawText; // Use rawText directly as it's pre-cleaned by background
     removeSummaryPopup();
 
     // Container for popup + close button
@@ -330,7 +286,8 @@
       const vid = getVideoIdFromUrl(location.search);
       if (vid) {
         const rect = btn.getBoundingClientRect();
-        const summary = await getCachedSummary(vid, model);
+        // Passing null for model, as on-page button relies on background's default model.
+        const summary = await requestSummaryFromBackground(vid, null);
         createSummaryPopup(summary, rect, { fontSize: window.ytldrFontSize });
       }
       btn.disabled = false;
@@ -342,215 +299,63 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Tampermonkey/Greasemonkey menu command (same as before)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  function registerMenuCommand() {
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('Generate Summary for Current Video', async () => {
-        const vid = getVideoIdFromUrl(location.search);
-        if (!vid) {
-          alert('No YouTube video detected on this page.');
-          return;
-        }
-        // Use center of window as reference for popup
-        const rect = {
-          top: window.innerHeight / 2 - 100,
-          right: window.innerWidth / 2
-        };
-        const summary = await getCachedSummary(vid);
-        createSummaryPopup(summary, rect);
-      });
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Custom right-click context menu (“Generate Summary”)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  let customContextMenu = null;
-
-  function createCustomContextMenu(x, y, videoId) {
-    removeCustomContextMenu();
-
-    // Container
-    const menu = document.createElement('div');
-    menu.className = 'ytldr-context-menu';
-    Object.assign(menu.style, {
-      position: 'fixed',
-      top: `${y}px`,
-      left: `${x}px`,
-      background: '#333',
-      color: '#fff',
-      borderRadius: '4px',
-      boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
-      zIndex: 10001,
-      minWidth: '160px',
-      fontSize: '14px',
-    });
-
-    // “Generate Summary” item
-    const item = document.createElement('div');
-    item.textContent = 'Generate Summary';
-    Object.assign(item.style, {
-      padding: '8px 12px',
-      cursor: 'pointer',
-    });
-    item.addEventListener('mouseenter', () => { item.style.background = '#444'; });
-    item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
-    item.addEventListener('click', async () => {
-      removeCustomContextMenu();
-      const vid = videoId || getVideoIdFromUrl(location.search);
-      if (!vid) {
-        alert('No YouTube video detected here.');
-        return;
-      }
-      const rect2 = { top: y, right: x + 150 };
-      const summary = await getCachedSummary(vid);
-      createSummaryPopup(summary, rect2);
-    });
-    menu.appendChild(item);
-
-    // Separator
-    const sep = document.createElement('div');
-    Object.assign(sep.style, {
-      height: '1px',
-      background: '#555',
-      margin: '4px 0',
-    });
-    menu.appendChild(sep);
-
-    // “Close Menu” item
-    const closeItem = document.createElement('div');
-    closeItem.textContent = 'Close Menu';
-    Object.assign(closeItem.style, {
-      padding: '8px 12px',
-      cursor: 'pointer',
-    });
-    closeItem.addEventListener('mouseenter', () => { closeItem.style.background = '#444'; });
-    closeItem.addEventListener('mouseleave', () => { closeItem.style.background = 'transparent'; });
-    closeItem.addEventListener('click', () => removeCustomContextMenu());
-    menu.appendChild(closeItem);
-
-    document.body.appendChild(menu);
-    customContextMenu = menu;
-
-    // Adjust if overflowing viewport
-    const rectBounds = menu.getBoundingClientRect();
-    if (rectBounds.right > window.innerWidth) {
-      menu.style.left = `${window.innerWidth - rectBounds.width - 10}px`;
-    }
-    if (rectBounds.bottom > window.innerHeight) {
-      menu.style.top = `${window.innerHeight - rectBounds.height - 10}px`;
-    }
-  }
-
-  function removeCustomContextMenu() {
-    if (customContextMenu) {
-      customContextMenu.remove();
-      customContextMenu = null;
-    }
-  }
-
-  function onPageClick(e) {
-    // Close custom context menu on any left-click outside
-    if (customContextMenu) {
-      removeCustomContextMenu();
-    }
-  }
-
-  function setupCustomContextMenu() {
-    // Intercept right-clicks on thumbnails and on the page
-    document.addEventListener('contextmenu', (e) => {
-      // Only show when right-clicking on:
-      // - a thumbnail link (video preview) OR
-      // - on a watch page (outside of native UI elements)
-      let vid = null;
-
-      // Check if right-clicked element is a thumbnail link
-      const anchor = e.target.closest('a#thumbnail');
-      if (anchor && anchor.href) {
-        vid = getVideoIdFromUrl(anchor.href);
-      }
-
-      // If on a watch page and click not on a thumbnail, allow summary for current video
-      if (!vid && /v=([\w-]{11})/.test(location.search)) {
-        vid = getVideoIdFromUrl(location.search);
-      }
-
-      if (vid) {
-        e.preventDefault();
-        const x = e.clientX;
-        const y = e.clientY;
-        createCustomContextMenu(x, y, vid);
-      }
-    });
-
-    // Close menu on any left-click or Escape key
-    document.addEventListener('click', onPageClick);
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') removeCustomContextMenu();
-    });
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // Initialization: set up summary button, menu cmd, and context menu only.
   // Hover logic has been completely removed.
   // ─────────────────────────────────────────────────────────────────────────────
 
   function init() {
     addSummaryButton();
-    registerMenuCommand();
-    setupCustomContextMenu();
   }
 
   window.addEventListener('DOMContentLoaded', init);
   document.addEventListener('yt-navigate-finish', init);
 
-  // DescribeLink mode: listen for YouTube video link clicks and send to extension
-  if (window === window.top) {
-    document.addEventListener('click', function (e) {
-      let el = e.target;
-      while (el && el.tagName !== 'A') el = el.parentElement;
-      if (el && el.href && el.href.includes('youtube.com/watch')) {
-        chrome.runtime.sendMessage({ action: 'summarizeUrl', url: el.href });
-      }
-    }, true);
-  }
+  // DescribeLink mode related code removed.
 
   // Listen for show/hide on-page summary button toggle from popup
-  let summaryBtnEnabled = true;
+  let summaryBtnEnabled = true; // Default to enabled
+
+  // Combined message listener for actions from popup.js
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'ytldrToggleSummaryBtn') {
       summaryBtnEnabled = !summaryBtnEnabled;
       if (summaryBtnEnabled) {
-        addSummaryButton();
+        addSummaryButton(); // Attempt to add button if enabled
       } else {
         const btn = document.getElementById('ytldr-summary-btn');
         if (btn) btn.remove();
       }
-      sendResponse && sendResponse();
+      sendResponse({ success: true, summaryBtnEnabled }); // Respond with current state
+      return; // No async response needed here
     }
+
     if (msg.action === 'ytldrCheckSummaryBtn') {
       const btn = document.getElementById('ytldr-summary-btn');
-      sendResponse && sendResponse({ enabled: !!btn });
+      sendResponse({ enabled: !!btn && summaryBtnEnabled }); // Check both existence and enabled state
+      return; // No async response needed here
     }
-  });
 
-  // Listen for summary requests from popup and return cached summary if available
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.action === 'ytldrGetSummary') {
-      const url = msg.url;
-      const model = msg.model;
-      const vid = getVideoIdFromUrl(url);
-      if (!vid) {
-        sendResponse && sendResponse({ summary: 'No YouTube video detected.' });
-        return;
+    // Listener for popup.js to request subtitles
+    if (msg.action === 'getSubtitles') {
+      const { videoId } = msg;
+      console.log(`[Content] Received getSubtitles request for videoId: ${videoId}`);
+      if (!videoId) {
+        sendResponse({ error: 'No videoId provided for getSubtitles.' });
+        return false;
       }
-      getCachedSummary(vid, model).then(summary => {
-        sendResponse && sendResponse({ summary });
-      });
-      return true; // async
+      fetchSubtitles(videoId)
+        .then(subtitles => {
+          if (subtitles) {
+            sendResponse({ subtitles });
+          } else {
+            sendResponse({ error: 'Failed to fetch subtitles.' });
+          }
+        })
+        .catch(error => {
+          console.error(`[Content] Error fetching subtitles for ${videoId}:`, error);
+          sendResponse({ error: error.message || 'Error fetching subtitles.' });
+        });
+      return true; // Indicates asynchronous response
     }
   });
 })();

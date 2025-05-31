@@ -10,6 +10,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const summarizeBtn = document.getElementById('summarizeBtn');
   const summaryBox = document.getElementById('summaryBox');
   const urlInput = document.getElementById('urlInput');
+  const regenerateBtn = document.getElementById('regenerateBtn');
+
+  // Initially hide regenerate button
+  regenerateBtn.style.display = 'none';
 
   // Fetch models from Ollama API
   try {
@@ -66,90 +70,190 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   summarizeBtn.addEventListener('click', async () => {
     let url = urlInput.value.trim();
+    let currentTabId = null;
+
     if (!url) {
-      // Try to get current YouTube video URL
-      const tabs = await new Promise(r => chrome.tabs.query({active: true, currentWindow: true}, r));
+      const tabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
       const tab = tabs[0];
       if (tab && tab.url && tab.url.includes('youtube.com/watch')) {
         url = tab.url;
+        currentTabId = tab.id;
       } else {
-        summaryBox.textContent = 'No YouTube video URL provided or detected.';
+        summaryBox.textContent = 'No YouTube video URL provided or detected on current page.';
         return;
       }
+    } else {
+      // If URL is manually entered, we might not have a tab ID for content script communication easily.
+      // For now, let's assume if a URL is entered, it's for a video that might not be the active tab.
+      // This part of the logic might need refinement if we want to summarize arbitrary URLs not in an active tab.
+      // For this refactor, we primarily focus on summarizing the active tab or a URL that's also likely the active tab.
+      const tabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
+      currentTabId = tabs[0]?.id; // Use active tab if available
     }
-    summaryBox.textContent = 'Generating summary...';
+
+    const videoId = url.match(/[?&]v=([\w-]{11})/)?.[1];
+    if (!videoId) {
+      summaryBox.textContent = 'Could not extract video ID from URL.';
+      return;
+    }
+
+    summaryBox.textContent = 'Fetching subtitles...';
     summarizeBtn.disabled = true;
-    summarizeBtn.textContent = 'Summarizing…';
+    regenerateBtn.style.display = 'none'; // Hide regenerate button during new summary generation
+    summarizeBtn.textContent = 'Working…';
     summarizeBtn.style.background = '#888';
     summarizeBtn.style.cursor = 'wait';
-    chrome.runtime.sendMessage({ action: 'ytldrSummarizing' });
-    // Try to get from cache first
-    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-      const tabId = tabs[0]?.id;
-      chrome.tabs.sendMessage(tabId, { action: 'ytldrGetSummary', url, model: modelSelect.value }, async (resp) => {
-        if (resp && resp.summary && !resp.summary.startsWith('Failed to summarize')) {
-          summaryBox.textContent = resp.summary;
-          summaryBox.style.fontSize = fontSizeInput.value + 'px';
-          summarizeBtn.disabled = false;
-          updateSummarizeBtnLabel();
-          summarizeBtn.style.background = '';
-          summarizeBtn.style.cursor = '';
-          chrome.runtime.sendMessage({ action: 'ytldrSummaryReady' });
-        } else {
-          // Not in cache or failed, generate
-          try {
-            const res = await fetch('http://localhost:11434/api/generate', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                model: modelSelect.value,
-                prompt: `Summarize this YouTube video: ${url}`
-              })
-            });
-            const data = await res.json();
-            summaryBox.textContent = data.response || 'No summary.';
+    chrome.runtime.sendMessage({ action: 'ytldrSummarizing' }); // For any UI indication
+
+    if (!currentTabId) {
+        summaryBox.textContent = 'Cannot fetch subtitles: No active YouTube tab identified for communication.';
+        summarizeBtn.disabled = false;
+        updateSummarizeBtnLabel();
+        summarizeBtn.style.background = '';
+        summarizeBtn.style.cursor = '';
+        chrome.runtime.sendMessage({ action: 'ytldrSummaryReady' });
+        return;
+    }
+
+    // 1. Get subtitles from content.js
+    chrome.tabs.sendMessage(currentTabId, { action: 'getSubtitles', videoId }, (subtitlesResponse) => {
+      if (chrome.runtime.lastError || !subtitlesResponse || subtitlesResponse.error) {
+        summaryBox.textContent = `Error fetching subtitles: ${subtitlesResponse?.error || chrome.runtime.lastError?.message || 'Unknown error'}`;
+        summarizeBtn.disabled = false;
+        updateSummarizeBtnLabel();
+        summarizeBtn.style.background = '';
+        summarizeBtn.style.cursor = '';
+        chrome.runtime.sendMessage({ action: 'ytldrSummaryReady' });
+        return;
+      }
+
+      summaryBox.textContent = 'Generating summary...';
+      const { subtitles } = subtitlesResponse;
+      const selectedModel = modelSelect.value;
+
+      // 2. Send subtitles to background.js for summary generation
+      chrome.runtime.sendMessage(
+        { action: 'generateSummary', videoId, subtitles, model: selectedModel },
+        (summaryResponse) => {
+          if (chrome.runtime.lastError || !summaryResponse || summaryResponse.error) {
+            summaryBox.textContent = `Error generating summary: ${summaryResponse?.error || chrome.runtime.lastError?.message || 'Unknown error'}`;
+            regenerateBtn.style.display = 'none'; // Keep hidden on error
+          } else {
+            summaryBox.textContent = summaryResponse.summary;
             summaryBox.style.fontSize = fontSizeInput.value + 'px';
-            // Save to cache in content script
-            chrome.tabs.sendMessage(tabId, { action: 'ytldrGetSummary', url, model: modelSelect.value }, () => {});
-          } catch (e) {
-            summaryBox.textContent = 'Error generating summary.';
+            regenerateBtn.style.display = 'block'; // Show regenerate button on success
           }
           summarizeBtn.disabled = false;
           updateSummarizeBtnLabel();
           summarizeBtn.style.background = '';
           summarizeBtn.style.cursor = '';
+          // Regenerate button is already handled by its own logic for enabling/disabling
           chrome.runtime.sendMessage({ action: 'ytldrSummaryReady' });
         }
-      });
+      );
+    });
+  });
+
+  regenerateBtn.addEventListener('click', async () => {
+    let url = urlInput.value.trim();
+    let currentTabId = null;
+
+    // Prioritize URL from input, then active tab
+    if (!url) {
+      const tabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
+      const tab = tabs[0];
+      if (tab && tab.url && tab.url.includes('youtube.com/watch')) {
+        url = tab.url;
+        currentTabId = tab.id;
+      } else {
+        summaryBox.textContent = 'No YouTube video URL available for re-generation.';
+        return;
+      }
+    } else {
+      // If URL is from input, try to get active tab ID for content script,
+      // but it might not be the tab corresponding to the URL.
+      const tabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
+      currentTabId = tabs[0]?.id;
+    }
+
+    const videoId = url.match(/[?&]v=([\w-]{11})/)?.[1];
+    if (!videoId) {
+      summaryBox.textContent = 'Could not extract video ID from URL for re-generation.';
+      return;
+    }
+
+    if (!currentTabId) {
+      summaryBox.textContent = 'Cannot fetch subtitles for re-generation: No active tab identified.';
+      return;
+    }
+
+    summaryBox.textContent = 'Re-fetching subtitles...';
+    summarizeBtn.disabled = true;
+    regenerateBtn.disabled = true;
+    regenerateBtn.textContent = 'Working...';
+
+    chrome.tabs.sendMessage(currentTabId, { action: 'getSubtitles', videoId }, (subtitlesResponse) => {
+      if (chrome.runtime.lastError || !subtitlesResponse || subtitlesResponse.error) {
+        summaryBox.textContent = `Error re-fetching subtitles: ${subtitlesResponse?.error || chrome.runtime.lastError?.message || 'Unknown error'}`;
+        summarizeBtn.disabled = false;
+        regenerateBtn.disabled = false;
+        regenerateBtn.textContent = 'Re-generate Summary';
+        return;
+      }
+
+      summaryBox.textContent = 'Re-generating summary (bypassing cache)...';
+      const { subtitles } = subtitlesResponse;
+      const selectedModel = modelSelect.value;
+
+      chrome.runtime.sendMessage(
+        { action: 'generateSummary', videoId, subtitles, model: selectedModel, bypassCache: true },
+        (summaryResponse) => {
+          if (chrome.runtime.lastError || !summaryResponse || summaryResponse.error) {
+            summaryBox.textContent = `Error re-generating summary: ${summaryResponse?.error || chrome.runtime.lastError?.message || 'Unknown error'}`;
+          } else {
+            summaryBox.textContent = summaryResponse.summary;
+            summaryBox.style.fontSize = fontSizeInput.value + 'px';
+          }
+          summarizeBtn.disabled = false;
+          regenerateBtn.disabled = false;
+          regenerateBtn.textContent = 'Re-generate Summary';
+          regenerateBtn.style.display = 'block'; // Ensure it's visible
+        }
+      );
     });
   });
 
   // Add toggle for Create Summary button on YouTube page
-  let summaryBtnToggle = null;
+  let summaryBtnToggleElement = null; // Renamed to avoid conflict
   function updateSummaryBtnToggleState() {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
       const tab = tabs[0];
-      if (tab && tab.url && tab.url.includes('youtube.com/watch')) {
+      if (tab && tab.id && tab.url && tab.url.includes('youtube.com/watch')) {
         chrome.tabs.sendMessage(tab.id, { action: 'ytldrCheckSummaryBtn' }, (resp) => {
-          if (summaryBtnToggle) {
-            summaryBtnToggle.textContent = resp && resp.enabled ? 'Hide On-Page Button' : 'Show On-Page Button';
+          if (summaryBtnToggleElement) { // Use renamed variable
+            summaryBtnToggleElement.textContent = resp && resp.enabled ? 'Hide On-Page Button' : 'Show On-Page Button';
           }
         });
+      } else if (summaryBtnToggleElement) {
+        summaryBtnToggleElement.textContent = 'N/A (Not a YouTube Page)';
+        summaryBtnToggleElement.disabled = true;
       }
     });
   }
-  summaryBtnToggle = document.createElement('button');
-  summaryBtnToggle.id = 'toggleSummaryBtn';
-  summaryBtnToggle.style.marginBottom = '8px';
-  summaryBtnToggle.textContent = 'Show On-Page Button';
-  summaryBtnToggle.addEventListener('click', () => {
+  summaryBtnToggleElement = document.createElement('button'); // Use renamed variable
+  summaryBtnToggleElement.id = 'toggleSummaryBtn';
+  summaryBtnToggleElement.style.marginBottom = '8px';
+  summaryBtnToggleElement.textContent = 'Show On-Page Button'; // Initial text
+  summaryBtnToggleElement.addEventListener('click', () => {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
       const tab = tabs[0];
-      if (tab && tab.url && tab.url.includes('youtube.com/watch')) {
+      if (tab && tab.id && tab.url && tab.url.includes('youtube.com/watch')) {
         chrome.tabs.sendMessage(tab.id, { action: 'ytldrToggleSummaryBtn' }, updateSummaryBtnToggleState);
       }
     });
   });
-  summarizeBtn.parentNode.insertBefore(summaryBtnToggle, summarizeBtn);
-  updateSummaryBtnToggleState();
+  if (summarizeBtn && summarizeBtn.parentNode) { // Ensure summarizeBtn exists
+    summarizeBtn.parentNode.insertBefore(summaryBtnToggleElement, summarizeBtn);
+  }
+  updateSummaryBtnToggleState(); // Call after element is in DOM
 });
