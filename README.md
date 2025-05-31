@@ -1,9 +1,11 @@
 # ytldr
 
-A browser extension that shows a summary of YouTube videos when you hover over them.
+<img src="icon128.png" alt="ytldr icon" width="64" height="64" style="float:right; margin-left:16px;" />
+
+A browser extension that shows a summary of YouTube videos in a popup or on the page, using a locally uinstalled Ollama LLM.
 
 ## Prerequisites
-Before installing the extension, you need a local Ollama server running with CORS enabled and the Deepseek model installed. Follow the steps below:
+Before installing the extension, you need a local Ollama server running with CORS enabled and at least one model installed. See below for setup instructions.
 
 ### Install Ollama
 
@@ -21,8 +23,6 @@ By default, Ollama listens on localhost:11434. To allow your browser (which runs
 #### macOS / Linux
 ```bash
 export OLLAMA_ORIGINS="*"
-# (Optional) to let Ollama listen on all network interfaces:
-export OLLAMA_HOST="0.0.0.0"
 ```
 Then restart Ollama (see step 4).
 
@@ -35,12 +35,12 @@ Under User variables, click New… and add:
 
 Restart your computer or restart the Ollama service.
 
-### Pull the Deepseek model
+### Pull a Model (e.g. Deepseek)
 After Ollama is installed and CORS is configured, run:
 ```bash
 ollama pull deepseek-r1:latest
 ```
-This downloads `deepseek-r1:1.5b` to your local Ollama instance.
+Or pull any other supported model you want to use for summarization.
 
 ### Start the Ollama server
 If Ollama did not auto-start, launch it in a terminal/PowerShell:
@@ -54,9 +54,16 @@ curl http://localhost:11434
 You should see a simple confirmation that Ollama is up.
 
 ## Features
-- Injects a content script into YouTube
-- Shows a popup with a summary when hovering over video thumbnails
-- (Planned) Fetches summaries from an API
+- Extension popup UI lets you:
+  - Select the Ollama model for summarization (auto-fetched from your local Ollama server)
+  - Adjust the font size of summaries
+  - Autofill the YouTube URL field with the current video if on a YouTube page
+  - Show/hide the on-page "Generate Summary" button
+  - Summarize any YouTube video by URL or the current video
+- Summaries are cached per video and model for instant reuse in both popup and on-page windows
+- On-page summary popup is draggable and resizable
+- Font size changes apply live to both popup and on-page summary windows
+- Context menu and on-page button both use the same summary logic and cache
 
 ## Installation
 1. Go to `chrome://extensions` (or Edge extensions page)
@@ -64,18 +71,22 @@ You should see a simple confirmation that Ollama is up.
 3. Click "Load unpacked" and select this folder
 
 ## Usage
-- Hover over any YouTube video thumbnail to see a summary popup.
+- Open a YouTube video and click the extension icon to open the popup
+- The YouTube URL field will autofill if you're on a video page
+- Select your model, adjust font size, and click "Summarize" to generate or view a cached summary
+- Use the toggle to show/hide the on-page "Generate Summary" button
+- You can also right-click on video thumbnails for a context menu summary
 
 ## Development
 - Edit `content.js` for main logic
-- Edit `popup.html` for extension popup
+- Edit `popup.html` and `popup.js` for extension popup
 - Edit `style.css` for popup styles
 
 ## Local LLM Summarization
-This extension requires a local LLM server running at `http://localhost:5000/summarize` that accepts POST requests with `{ text: <subtitles> }` and returns `{ summary: <summary> }`.
+This extension requires a local Ollama server running at `http://localhost:11434` that accepts POST requests to `/api/generate` with `{ model, prompt }` and returns `{ response }`.
 
 Subtitles are fetched from YouTube (if available) and sent to the local LLM for summarization. If no subtitles are found, a message is shown instead.
 
 ---
 
-This is an MVP. Summaries are currently placeholders.
+This is an MVP. Summaries are generated live and cached per video/model. UI and features are evolving rapidly.
