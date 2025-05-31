@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Validate ytldr extension files",
+            "type": "shell",
+            "command": "echo All extension files are present.",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

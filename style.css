@@ -1,0 +1,6 @@
+/* ytldr summary popup styles */
+.ytldr-summary-popup {
+    font-size: 14px;
+    line-height: 1.5;
+    pointer-events: none;
+}
