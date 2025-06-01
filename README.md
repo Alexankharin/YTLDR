@@ -4,6 +4,12 @@
 
 A browser extension that shows a summary of YouTube videos in a popup or on the page, using a locally uinstalled Ollama LLM.
 
+---
+
+<img src="image.png" alt="ytldr UI demo" width="480" style="display:block; margin:24px auto; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,0.15);" />
+
+---
+
 ## Prerequisites
 Before installing the extension, you need a local Ollama server running with CORS enabled and at least one model installed. See below for setup instructions.
 
